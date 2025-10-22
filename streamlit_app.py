@@ -1,151 +1,229 @@
+# streamlit_app.py
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import plotly.express as px
+import lightgbm as lgb
+import numpy as np
+import os
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+st.set_page_config(page_title="🌍 Global Energy Dashboard", layout="wide")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# -----------------------------------------------------------
+# 🔹 Sidebar Navigasi
+st.sidebar.title("📊 Navigasi Dashboard")
+menu = st.sidebar.radio("Pilih Halaman:", ["🌍 Analisis Data Global", "🤖 Prediksi Intensitas Karbon"])
 
+# -----------------------------------------------------------
+# 🔹 Fungsi Load Data
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def load_data(file_path):
+    try:
+        df = pd.read_csv(file_path)
+        return df
+    except Exception as e:
+        st.error(f"Gagal memuat data: {e}")
+        return pd.DataFrame()
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# ===========================================================
+# 🔹 Upload Dataset atau Gunakan Default
+# ===========================================================
+st.sidebar.markdown("### 📁 Dataset Energi Global")
+uploaded_file = st.sidebar.file_uploader("Unggah file CSV Anda:", type=["csv"])
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+if uploaded_file is not None:
+    df = load_data(uploaded_file)
+    st.sidebar.success("✅ Dataset berhasil diunggah!")
+else:
+    default_path = "final_enriched_WITH_CLEAN_COORDS.csv"
+    if os.path.exists(default_path):
+        df = load_data(default_path)
+        st.sidebar.info("📂 Menggunakan dataset bawaan.")
+    else:
+        st.sidebar.error("⚠️ Tidak ada dataset ditemukan. Harap unggah file CSV.")
+        df = pd.DataFrame()
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+# ===========================================================
+# 🌍 HALAMAN 1: ANALISIS DATA GLOBAL
+# ===========================================================
+if menu == "🌍 Analisis Data Global":
+    st.title("🌍 Dashboard Analisis Energi & Intensitas Karbon Global")
+    st.markdown(
+        "Visualisasi interaktif untuk melihat hubungan antara energi terbarukan, intensitas karbon, "
+        "dan total pembangkit listrik di seluruh dunia."
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    if df.empty:
+        st.warning("Tidak ada data untuk ditampilkan. Silakan unggah file CSV terlebih dahulu.")
+        st.stop()
 
-    return gdp_df
+    # 1️⃣ Filter Tahun
+    if "year" in df.columns:
+        years = sorted(df["year"].dropna().unique())
+        selected_year = st.slider("Pilih Tahun", int(min(years)), int(max(years)), int(max(years)))
+        df_year = df[df["year"] == selected_year]
+    else:
+        st.error("Kolom 'year' tidak ditemukan di dataset.")
+        st.stop()
 
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+    # 2️⃣ Peta Global
+    st.subheader("📍 Peta Kepadatan Pembangkit Listrik Global")
+    if {"Latitude", "Longitude"}.issubset(df.columns):
+        df_map = df.dropna(subset=["Latitude", "Longitude"])
+        if not df_map.empty:
+            fig_map = px.density_mapbox(
+                df_map,
+                lat="Latitude",
+                lon="Longitude",
+                z="total_twh" if "total_twh" in df.columns else None,
+                radius=10,
+                center=dict(lat=20, lon=0),
+                zoom=1,
+                mapbox_style="carto-darkmatter",
+                title="Kepadatan Total Pembangkit Listrik Global (TWh)",
+            )
+            st.plotly_chart(fig_map, use_container_width=True)
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            st.info("Tidak ada koordinat yang valid untuk dipetakan.")
+    else:
+        st.warning("Kolom Latitude/Longitude tidak ditemukan di dataset ini.")
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+    # 3️⃣ Scatter Plot
+    if {"renewable_share_percentage", "carbon_intensity", "entity"}.issubset(df.columns):
+        st.subheader("⚡ Hubungan Energi Terbarukan vs Intensitas Karbon")
+        fig_scatter = px.scatter(
+            df_year,
+            x="renewable_share_percentage",
+            y="carbon_intensity",
+            color="entity",
+            size="total_twh" if "total_twh" in df.columns else None,
+            hover_name="entity",
+            labels={
+                "renewable_share_percentage": "Share Energi Terbarukan (%)",
+                "carbon_intensity": "Intensitas Karbon (gCO₂/kWh)",
+            },
+            title=f"Tahun {selected_year}: Hubungan Energi Terbarukan vs Intensitas Karbon",
         )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+    else:
+        st.warning("Kolom penting untuk scatter plot tidak lengkap di dataset ini.")
+
+    # 4️⃣ Tren Global
+    st.subheader("📈 Tren Intensitas Karbon Global (Rata-rata)")
+    if {"carbon_intensity", "renewable_share_percentage"}.issubset(df.columns):
+        global_trend = df.groupby("year", as_index=False).agg(
+            {"carbon_intensity": "mean", "renewable_share_percentage": "mean"}
+        )
+
+        fig_line = px.line(
+            global_trend,
+            x="year",
+            y=["carbon_intensity", "renewable_share_percentage"],
+            labels={"value": "Nilai", "year": "Tahun"},
+            title="Tren Global: Intensitas Karbon vs Share Energi Terbarukan",
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+    else:
+        st.warning("Tidak ada data tren yang cukup untuk divisualisasikan.")
+
+    # 5️⃣ Statistik Ringkasan
+    if not df_year.empty:
+        st.subheader("📊 Statistik Global (Ringkasan Tahun Terpilih)")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Rata-rata Intensitas Karbon", f"{df_year['carbon_intensity'].mean():.2f} gCO₂/kWh")
+        col2.metric("Rata-rata Energi Terbarukan", f"{df_year['renewable_share_percentage'].mean():.2f} %")
+        col3.metric("Total Pembangkit", f"{df_year['total_twh'].sum():,.0f} TWh")
+    else:
+        st.info("Tidak ada data untuk tahun yang dipilih.")
+
+    st.markdown("---")
+    st.caption("© 2025 - Global Energy Dashboard | Dibuat dengan ❤️ menggunakan Streamlit & Plotly")
+
+
+# ===========================================================
+# 🤖 HALAMAN 2: PREDIKSI INTENSITAS KARBON
+# ===========================================================
+elif menu == "🤖 Prediksi Intensitas Karbon":
+    st.title("🤖 Prediksi Intensitas Karbon Menggunakan Model Machine Learning (LightGBM)")
+
+    st.markdown(
+        "Gunakan model prediktif untuk memperkirakan **intensitas karbon (gCO₂/kWh)** "
+        "berdasarkan 10 fitur input utama."
+    )
+
+    st.info("Pastikan file model `model_lightgbm.txt` ada di folder yang sama dengan streamlit_app.py")
+
+    # Coba muat model LightGBM dari file .txt
+    model_loaded = False
+    try:
+        model = lgb.Booster(model_file="model_lightgbm.txt")
+        model_loaded = True
+        st.success("✅ Model LightGBM berhasil dimuat dari model_lightgbm.txt")
+        feature_names = model.feature_name()
+    except Exception as e:
+        st.warning(f"⚠️ Model belum dapat dimuat: {e}")
+        feature_names = []
+
+    # Input fitur utama (10 fitur)
+    st.subheader("🧮 Masukkan Fitur untuk Prediksi")
+    col1, col2 = st.columns(2)
+
+    total_twh = col1.number_input("Total Listrik (TWh)", min_value=0.0, value=1000.0)
+    renewable_share = col2.slider("Share Energi Terbarukan (%)", 0.0, 100.0, 30.0)
+    coal_generation = col1.number_input("Coal Generation (TWh)", min_value=0.0, value=0.0)
+    gas_generation = col2.number_input("Gas Generation (TWh)", min_value=0.0, value=0.0)
+    hydro_generation = col1.number_input("Hydro Generation (TWh)", min_value=0.0, value=0.0)
+    nuclear_generation = col2.number_input("Nuclear Generation (TWh)", min_value=0.0, value=0.0)
+    oil_generation = col1.number_input("Oil Generation (TWh)", min_value=0.0, value=0.0)
+    other_renewable = col2.number_input("Other Renewable (TWh)", min_value=0.0, value=0.0)
+    biofuel_generation = col1.number_input("Biofuel Generation (TWh)", min_value=0.0, value=0.0)
+    entity_input = st.selectbox("Wilayah/Negara", sorted(df["entity"].dropna().unique()))
+
+    # Pilih tahun prediksi bebas (masa depan)
+    selected_year = st.number_input(
+        "Tahun Prediksi",
+        min_value=2022,
+        max_value=2100,
+        value=2025,
+        step=1
+    )
+
+    # Tombol prediksi
+    if st.button("🔍 Prediksi Intensitas Karbon"):
+        if model_loaded and feature_names:
+            # Siapkan DataFrame sesuai fitur model
+            X_new_full = pd.DataFrame(columns=feature_names)
+            X_new_full.loc[0] = 0  # default semua 0
+
+            # Map 10 input user ke fitur model
+            feature_map = {
+                "total_twh": total_twh,
+                "renewable_share_percentage": renewable_share,
+                "coal_generation_twh": coal_generation,
+                "gas_generation_twh": gas_generation,
+                "hydro_generation_twh": hydro_generation,
+                "nuclear_generation_twh": nuclear_generation,
+                "oil_generation_twh": oil_generation,
+                "other_renewable_twh": other_renewable,
+                "biofuel_generation_twh": biofuel_generation,
+                "entity": hash(entity_input) % 1000,
+                "year": selected_year
+            }
+
+            # Isi DataFrame sesuai fitur yang ada di model
+            for f in feature_map:
+                if f in X_new_full.columns:
+                    X_new_full.loc[0, f] = feature_map[f]
+
+            # Prediksi
+            try:
+                y_pred = model.predict(X_new_full)[0]
+                st.success(f"🌱 Prediksi Intensitas Karbon Tahun {selected_year}: **{y_pred:.2f} gCO₂/kWh**")
+            except Exception as e:
+                st.error(f"Gagal melakukan prediksi: {e}")
+        else:
+            st.warning("⚠️ Model belum dimuat, gunakan mode simulasi.")
+            simulated = 500 - (renewable_share * 3.5) + (total_twh / 2000)
+            st.info(f"🌱 (Simulasi) Prediksi Intensitas Karbon Tahun {selected_year}: **{simulated:.2f} gCO₂/kWh**")
+
+    st.markdown("---")
+    st.caption("Model: LightGBM | 10 fitur input utama | Prediksi masa depan hingga 2100")
