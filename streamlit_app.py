@@ -140,90 +140,168 @@ if menu == "🌍 Analisis Data Global":
 
 
 # ===========================================================
-# 🤖 HALAMAN 2: PREDIKSI INTENSITAS KARBON
+# 🤖 HALAMAN 2: PREDIKSI INTENSITAS KARBON (LightGBM Forecast)
 # ===========================================================
 elif menu == "🤖 Prediksi Intensitas Karbon":
-    st.title("🤖 Prediksi Intensitas Karbon Menggunakan Model Machine Learning (LightGBM)")
-
+    st.title("🤖 Prediksi Intensitas Karbon Global (LightGBM Forecast Model)")
     st.markdown(
-        "Gunakan model prediktif untuk memperkirakan **intensitas karbon (gCO₂/kWh)** "
-        "berdasarkan 10 fitur input utama."
+        "Model ini menggunakan **LightGBM Regressor** untuk memprediksi "
+        "intensitas karbon global berdasarkan data historis pembangkit listrik dunia."
     )
 
-    st.info("Pastikan file model `model_lightgbm.txt` ada di folder yang sama dengan streamlit_app.py")
+    import lightgbm as lgb
+    import numpy as np
+    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    import matplotlib.pyplot as plt
+    import plotly.graph_objects as go
 
-    # Coba muat model LightGBM dari file .txt
-    model_loaded = False
+    # === 1️⃣ Load datasets
     try:
-        model = lgb.Booster(model_file="model_lightgbm.txt")
-        model_loaded = True
-        st.success("✅ Model LightGBM berhasil dimuat dari model_lightgbm.txt")
-        feature_names = model.feature_name()
+        df_carbon = pd.read_csv("carbon-intensity-electricity.csv")
+        df_elec = pd.read_csv("elec-fossil-nuclear-renewables.csv")
+        df_energy = pd.read_csv("per-capita-energy-use.csv")
     except Exception as e:
-        st.warning(f"⚠️ Model belum dapat dimuat: {e}")
-        feature_names = []
+        st.error(f"Gagal memuat dataset: {e}")
+        st.stop()
 
-    # Input fitur utama (10 fitur)
-    st.subheader("🧮 Masukkan Fitur untuk Prediksi")
-    col1, col2 = st.columns(2)
+    # === 2️⃣ Rename columns
+    df_carbon = df_carbon.rename(columns={
+        "Carbon intensity of electricity - gCO2/kWh": "carbon_intensity"
+    })
+    df_elec = df_elec.rename(columns={
+        "Electricity from fossil fuels - TWh (adapted for visualization of chart elec-fossil-nuclear-renewables)": "fossil_twh",
+        "Electricity from renewables - TWh (adapted for visualization of chart elec-fossil-nuclear-renewables)": "renewables_twh",
+        "Electricity from nuclear - TWh (adapted for visualization of chart elec-fossil-nuclear-renewables)": "nuclear_twh",
+    })
+    df_energy = df_energy.rename(columns={
+        "Primary energy consumption per capita (kWh/person)": "energy_use_per_capita"
+    })
 
-    total_twh = col1.number_input("Total Listrik (TWh)", min_value=0.0, value=1000.0)
-    renewable_share = col2.slider("Share Energi Terbarukan (%)", 0.0, 100.0, 30.0)
-    coal_generation = col1.number_input("Coal Generation (TWh)", min_value=0.0, value=0.0)
-    gas_generation = col2.number_input("Gas Generation (TWh)", min_value=0.0, value=0.0)
-    hydro_generation = col1.number_input("Hydro Generation (TWh)", min_value=0.0, value=0.0)
-    nuclear_generation = col2.number_input("Nuclear Generation (TWh)", min_value=0.0, value=0.0)
-    oil_generation = col1.number_input("Oil Generation (TWh)", min_value=0.0, value=0.0)
-    other_renewable = col2.number_input("Other Renewable (TWh)", min_value=0.0, value=0.0)
-    biofuel_generation = col1.number_input("Biofuel Generation (TWh)", min_value=0.0, value=0.0)
-    entity_input = st.selectbox("Wilayah/Negara", sorted(df["entity"].dropna().unique()))
+    # === 3️⃣ Merge datasets
+    df_merged = pd.merge(df_carbon, df_elec, on=["Entity", "Code", "Year"], how="outer")
+    df_merged = pd.merge(df_merged, df_energy, on=["Entity", "Code", "Year"], how="outer")
 
-    # Pilih tahun prediksi bebas (masa depan)
-    selected_year = st.number_input(
-        "Tahun Prediksi",
-        min_value=2022,
-        max_value=2100,
-        value=2025,
-        step=1
+    df_merged = df_merged.dropna(subset=["carbon_intensity"])
+    df_merged = df_merged.fillna(0)
+
+    # === 4️⃣ Train/test split (real-world forecasting)
+    train = df_merged[df_merged["Year"] < 2020]
+    test = df_merged[df_merged["Year"] >= 2020]
+
+    features = [
+        "Year",
+        "fossil_twh",
+        "renewables_twh",
+        "nuclear_twh",
+        "energy_use_per_capita",
+        "Entity"
+    ]
+    target = "carbon_intensity"
+
+    X_train = train[features].copy()
+    X_test = test[features].copy()
+    y_train = train[target]
+    y_test = test[target]
+
+    X_train["Entity"] = X_train["Entity"].astype("category")
+    X_test["Entity"] = X_test["Entity"].astype("category")
+
+    # === 5️⃣ Train or load model
+    model_path = "model_lightgbm_forecast.txt"
+    if os.path.exists(model_path):
+        model = lgb.Booster(model_file=model_path)
+        st.success("✅ Model LightGBM berhasil dimuat dari file.")
+    else:
+        st.info("🚀 Melatih model LightGBM baru...")
+        params = {
+            "objective": "regression_l1",
+            "metric": "l1",
+            "n_estimators": 1000,
+            "learning_rate": 0.05,
+            "feature_fraction": 0.9,
+            "bagging_fraction": 0.8,
+            "bagging_freq": 5,
+            "verbose": -1,
+            "n_jobs": -1,
+            "seed": 42,
+        }
+        model = lgb.LGBMRegressor(**params)
+        model.fit(X_train, y_train)
+        model.booster_.save_model(model_path)
+        st.success("✅ Model baru dilatih dan disimpan sebagai model_lightgbm_forecast.txt")
+
+    # === 6️⃣ Prediction & evaluation
+    y_pred = model.predict(X_test)
+
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+    r2 = r2_score(y_test, y_pred)
+
+    st.subheader("📊 Evaluasi Model (2020–2024)")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("MAE", f"{mae:.2f} gCO₂/kWh")
+    col2.metric("RMSE", f"{rmse:.2f} gCO₂/kWh")
+    col3.metric("R²", f"{r2:.3f}")
+
+    # === 7️⃣ Save and visualize forecast results
+    test_pred = test.copy()
+    test_pred["predicted"] = y_pred
+    agg = test_pred.groupby("Year")[["carbon_intensity", "predicted"]].mean().reset_index()
+    agg.to_csv("forecast_results.csv", index=False)
+
+    st.success("📁 Forecast disimpan sebagai forecast_results.csv")
+
+    # === 8️⃣ Clean interactive chart (Plotly)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=agg["Year"],
+        y=agg["carbon_intensity"],
+        mode="lines+markers",
+        name="Observed (Global Avg)",
+        line=dict(width=3)
+    ))
+    fig.add_trace(go.Scatter(
+        x=agg["Year"],
+        y=agg["predicted"],
+        mode="lines+markers",
+        name="Predicted (Global Avg)",
+        line=dict(width=3, dash="dash")
+    ))
+    fig.update_layout(
+        title="🌍 Global Average Carbon Intensity: Observed vs Predicted",
+        xaxis_title="Year",
+        yaxis_title="Carbon Intensity (gCO₂/kWh)",
+        template="plotly_white",
+        hovermode="x unified"
     )
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Tombol prediksi
-    if st.button("🔍 Prediksi Intensitas Karbon"):
-        if model_loaded and feature_names:
-            # Siapkan DataFrame sesuai fitur model
-            X_new_full = pd.DataFrame(columns=feature_names)
-            X_new_full.loc[0] = 0  # default semua 0
-
-            # Map 10 input user ke fitur model
-            feature_map = {
-                "total_twh": total_twh,
-                "renewable_share_percentage": renewable_share,
-                "coal_generation_twh": coal_generation,
-                "gas_generation_twh": gas_generation,
-                "hydro_generation_twh": hydro_generation,
-                "nuclear_generation_twh": nuclear_generation,
-                "oil_generation_twh": oil_generation,
-                "other_renewable_twh": other_renewable,
-                "biofuel_generation_twh": biofuel_generation,
-                "entity": hash(entity_input) % 1000,
-                "year": selected_year
-            }
-
-            # Isi DataFrame sesuai fitur yang ada di model
-            for f in feature_map:
-                if f in X_new_full.columns:
-                    X_new_full.loc[0, f] = feature_map[f]
-
-            # Prediksi
-            try:
-                y_pred = model.predict(X_new_full)[0]
-                st.success(f"🌱 Prediksi Intensitas Karbon Tahun {selected_year}: **{y_pred:.2f} gCO₂/kWh**")
-            except Exception as e:
-                st.error(f"Gagal melakukan prediksi: {e}")
-        else:
-            st.warning("⚠️ Model belum dimuat, gunakan mode simulasi.")
-            simulated = 500 - (renewable_share * 3.5) + (total_twh / 2000)
-            st.info(f"🌱 (Simulasi) Prediksi Intensitas Karbon Tahun {selected_year}: **{simulated:.2f} gCO₂/kWh**")
-
+    # === 9️⃣ Predict user-specified scenario (optional)
     st.markdown("---")
-    st.caption("Model: LightGBM | 10 fitur input utama | Prediksi masa depan hingga 2100")
+    st.subheader("🎯 Simulasi Tahun Masa Depan")
+
+    year_input = st.number_input("Tahun Prediksi", min_value=2023, max_value=2100, value=2025, step=1)
+    entity_input = st.selectbox("Pilih Entity (Negara/Wilayah)", sorted(df_merged["Entity"].dropna().unique()))
+    fossil = st.number_input("Listrik dari Fossil (TWh)", min_value=0.0, value=1000.0)
+    renew = st.number_input("Listrik dari Renewable (TWh)", min_value=0.0, value=500.0)
+    nuclear = st.number_input("Listrik dari Nuklir (TWh)", min_value=0.0, value=100.0)
+    energy_pc = st.number_input("Konsumsi Energi per Kapita (kWh/orang)", min_value=0.0, value=50000.0)
+
+    if st.button("🔮 Prediksi Intensitas Karbon Tahun Tersebut"):
+        total = fossil + renew + nuclear
+        if total == 0:
+            st.warning("⚠️ Semua input nol → Prediksi: 0 gCO₂/kWh")
+        else:
+            X_new = pd.DataFrame([{
+                "Year": year_input,
+                "fossil_twh": fossil,
+                "renewables_twh": renew,
+                "nuclear_twh": nuclear,
+                "energy_use_per_capita": energy_pc,
+                "Entity": entity_input
+            }])
+            X_new["Entity"] = X_new["Entity"].astype("category")
+            pred_future = model.predict(X_new)[0]
+            st.success(f"🌱 Prediksi Intensitas Karbon Tahun {year_input}: **{pred_future:.2f} gCO₂/kWh**")
+
+    st.caption("© 2025 - Global Carbon Forecasting Model | LightGBM Regressor")
